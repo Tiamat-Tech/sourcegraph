@@ -25,7 +25,8 @@ func (s *Store) Ranges(ctx context.Context, bundleID int, path string, startLine
 	}})
 	defer endObservation(1, observation.Args{})
 
-	documentData, exists, err := s.scanFirstDocumentData(s.Store.Query(ctx, sqlf.Sprintf(rangesDocumentQuery, bundleID, path)))
+	scanner := s.makeFirstDocumentDataScanner(DocumentDataColumnRanges | DocumentDataColumnHoverText)
+	documentData, exists, err := scanner(s.Store.Query(ctx, sqlf.Sprintf(rangesDocumentQuery, bundleID, path)))
 	if err != nil || !exists {
 		return nil, err
 	}

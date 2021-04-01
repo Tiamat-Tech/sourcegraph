@@ -12,38 +12,54 @@ type QualifiedDocumentData struct {
 	semantic.KeyedDocumentData
 }
 
-// scanDocumentData reads qualified document data from the given row object.
-func (s *Store) scanDocumentData(rows *sql.Rows, queryErr error) (_ []QualifiedDocumentData, err error) {
-	if queryErr != nil {
-		return nil, queryErr
-	}
-	defer func() { err = basestore.CloseRows(rows, err) }()
+type DocumentDataColumn uint8
 
-	var values []QualifiedDocumentData
-	for rows.Next() {
-		record, err := s.scanSingleDocumentDataObject(rows)
-		if err != nil {
-			return nil, err
+const (
+	DocumentDataColumnRanges DocumentDataColumn = 1 << iota
+	DocumentDataColumnHoverText
+	DocumentDataColumnMonikers
+	DocumentDataColumnPackageInformation
+	DocumentDataColumnDiagnostics
+
+	DocumentDataColumnAll = DocumentDataColumnRanges | DocumentDataColumnHoverText | DocumentDataColumnMonikers | DocumentDataColumnPackageInformation | DocumentDataColumnDiagnostics
+)
+
+// makeDocumentDataScanner creates a scanner that reads qualified document data from its given
+// row object. Only the values indicated by the columns bitset will be populated in the document
+// payload structs.
+func (s *Store) makeDocumentDataScanner(columns DocumentDataColumn) func(rows *sql.Rows, queryErr error) (_ []QualifiedDocumentData, err error) {
+	return func(rows *sql.Rows, queryErr error) (_ []QualifiedDocumentData, err error) {
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		defer func() { err = basestore.CloseRows(rows, err) }()
+
+		var values []QualifiedDocumentData
+		for rows.Next() {
+			record, err := s.scanSingleDocumentDataObject(rows, DocumentDataColumnAll)
+			if err != nil {
+				return nil, err
+			}
+
+			values = append(values, record)
 		}
 
-		values = append(values, record)
+		return values, nil
 	}
-
-	return values, nil
 }
 
-// makeDocumentVisitor returns a function that accepts a mapping function, reads
-// document values from the given row object and calls the mapping function on each
-// decoded document.
-func (s *Store) makeDocumentVisitor(rows *sql.Rows, queryErr error) func(func(string, semantic.DocumentData)) error {
-	return func(f func(string, semantic.DocumentData)) (err error) {
+// makeDocumentVisitor returns a function that calls the given visitor function over matching
+// document values. Only the values indicated by the columns bitset will be populated in the
+// document payload structs.
+func (s *Store) makeDocumentVisitor(columns DocumentDataColumn, f func(string, semantic.DocumentData)) func(rows *sql.Rows, queryErr error) error {
+	return func(rows *sql.Rows, queryErr error) (err error) {
 		if queryErr != nil {
 			return queryErr
 		}
 		defer func() { err = basestore.CloseRows(rows, err) }()
 
 		for rows.Next() {
-			record, err := s.scanSingleDocumentDataObject(rows)
+			record, err := s.scanSingleDocumentDataObject(rows, DocumentDataColumnAll)
 			if err != nil {
 				return err
 			}
@@ -55,30 +71,32 @@ func (s *Store) makeDocumentVisitor(rows *sql.Rows, queryErr error) func(func(st
 	}
 }
 
-// scanFirstDocumentData reads qualified document data values from the given row
-// object and returns the first one. If no rows match the query, a false-valued
-// flag is returned.
-func (s *Store) scanFirstDocumentData(rows *sql.Rows, queryErr error) (_ QualifiedDocumentData, _ bool, err error) {
-	if queryErr != nil {
-		return QualifiedDocumentData{}, false, queryErr
-	}
-	defer func() { err = basestore.CloseRows(rows, err) }()
+// makeFirstDocumentDataScanner creates a scanner that reads qualified document data from its given
+// row object and returns the first one. If no rows match the query, a false-valued flag is returned.
+// Only the values indicated by the columns bitset will be populated in the document payload structs.
+func (s *Store) makeFirstDocumentDataScanner(columns DocumentDataColumn) func(rows *sql.Rows, queryErr error) (_ QualifiedDocumentData, _ bool, err error) {
+	return func(rows *sql.Rows, queryErr error) (_ QualifiedDocumentData, _ bool, err error) {
+		if queryErr != nil {
+			return QualifiedDocumentData{}, false, queryErr
+		}
+		defer func() { err = basestore.CloseRows(rows, err) }()
 
-	if rows.Next() {
-		record, err := s.scanSingleDocumentDataObject(rows)
-		if err != nil {
-			return QualifiedDocumentData{}, false, err
+		if rows.Next() {
+			record, err := s.scanSingleDocumentDataObject(rows, DocumentDataColumnAll)
+			if err != nil {
+				return QualifiedDocumentData{}, false, err
+			}
+
+			return record, true, nil
 		}
 
-		return record, true, nil
+		return QualifiedDocumentData{}, false, nil
 	}
-
-	return QualifiedDocumentData{}, false, nil
 }
 
 // scanSingleDocumentDataObject populates a qualified document data value from the
 // given cursor.
-func (s *Store) scanSingleDocumentDataObject(rows *sql.Rows) (QualifiedDocumentData, error) {
+func (s *Store) scanSingleDocumentDataObject(rows *sql.Rows, columns DocumentDataColumn) (QualifiedDocumentData, error) {
 	var rawData []byte
 	var record QualifiedDocumentData
 	if err := rows.Scan(&record.UploadID, &record.Path, &rawData); err != nil {
@@ -90,6 +108,22 @@ func (s *Store) scanSingleDocumentDataObject(rows *sql.Rows) (QualifiedDocumentD
 		return QualifiedDocumentData{}, err
 	}
 	record.Document = data
+
+	if columns&DocumentDataColumnRanges == 0 {
+		record.Document.Ranges = nil
+	}
+	if columns&DocumentDataColumnHoverText == 0 {
+		record.Document.HoverResults = nil
+	}
+	if columns&DocumentDataColumnMonikers == 0 {
+		record.Document.Monikers = nil
+	}
+	if columns&DocumentDataColumnPackageInformation == 0 {
+		record.Document.PackageInformation = nil
+	}
+	if columns&DocumentDataColumnDiagnostics == 0 {
+		record.Document.Diagnostics = nil
+	}
 
 	return record, nil
 }

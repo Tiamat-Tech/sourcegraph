@@ -37,7 +37,7 @@ func (s *Store) definitionsReferences(ctx context.Context, extractor func(r sema
 	}})
 	defer endObservation(1, observation.Args{})
 
-	documentData, exists, err := s.scanFirstDocumentData(s.Store.Query(ctx, sqlf.Sprintf(locationsDocumentQuery, bundleID, path)))
+	documentData, exists, err := s.makeFirstDocumentDataScanner(DocumentDataColumnRanges)(s.Store.Query(ctx, sqlf.Sprintf(locationsDocumentQuery, bundleID, path)))
 	if err != nil || !exists {
 		return nil, 0, err
 	}
@@ -326,15 +326,15 @@ func (s *Store) readRangesFromDocuments(ctx context.Context, bundleID int, ids [
 			batch, paths = paths[:documentBatchSize], paths[documentBatchSize:]
 		}
 
+		visitDocuments := s.makeDocumentVisitor(DocumentDataColumnRanges, func(path string, document semantic.DocumentData) {
+			totalCount += s.readRangesFromDocument(bundleID, rangeIDsByResultID, locationsByResultID, path, document, traceLog)
+		})
+
 		pathQueries := make([]*sqlf.Query, 0, len(batch))
 		for _, path := range batch {
 			pathQueries = append(pathQueries, sqlf.Sprintf("%s", path))
 		}
-		visitDocuments := s.makeDocumentVisitor(s.Store.Query(ctx, sqlf.Sprintf(readRangesFromDocumentsQuery, bundleID, sqlf.Join(pathQueries, ","))))
-
-		if err := visitDocuments(func(path string, document semantic.DocumentData) {
-			totalCount += s.readRangesFromDocument(bundleID, rangeIDsByResultID, locationsByResultID, path, document, traceLog)
-		}); err != nil {
+		if err := visitDocuments(s.Store.Query(ctx, sqlf.Sprintf(readRangesFromDocumentsQuery, bundleID, sqlf.Join(pathQueries, ",")))); err != nil {
 			return nil, 0, err
 		}
 	}

@@ -25,7 +25,7 @@ func (s *Store) MonikersByPosition(ctx context.Context, bundleID int, path strin
 	}})
 	defer endObservation(1, observation.Args{})
 
-	documentData, exists, err := s.scanFirstDocumentData(s.Store.Query(ctx, sqlf.Sprintf(monikersDocumentQuery, bundleID, path)))
+	documentData, exists, err := s.makeFirstDocumentDataScanner(DocumentDataColumnRanges | DocumentDataColumnMonikers)(s.Store.Query(ctx, sqlf.Sprintf(monikersDocumentQuery, bundleID, path)))
 	if err != nil || !exists {
 		return nil, err
 	}

@@ -20,7 +20,7 @@ func (s *Store) Diagnostics(ctx context.Context, bundleID int, prefix string, li
 	}})
 	defer endObservation(1, observation.Args{})
 
-	documentData, err := s.scanDocumentData(s.Store.Query(ctx, sqlf.Sprintf(diagnosticsQuery, bundleID, prefix+"%")))
+	documentData, err := s.makeDocumentDataScanner(DocumentDataColumnDiagnostics)(s.Store.Query(ctx, sqlf.Sprintf(diagnosticsQuery, bundleID, prefix+"%")))
 	if err != nil {
 		return nil, 0, err
 	}

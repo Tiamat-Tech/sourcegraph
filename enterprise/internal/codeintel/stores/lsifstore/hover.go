@@ -20,7 +20,7 @@ func (s *Store) Hover(ctx context.Context, bundleID int, path string, line, char
 	}})
 	defer endObservation(1, observation.Args{})
 
-	documentData, exists, err := s.scanFirstDocumentData(s.Store.Query(ctx, sqlf.Sprintf(hoverDocumentQuery, bundleID, path)))
+	documentData, exists, err := s.makeFirstDocumentDataScanner(DocumentDataColumnRanges | DocumentDataColumnHoverText)(s.Store.Query(ctx, sqlf.Sprintf(hoverDocumentQuery, bundleID, path)))
 	if err != nil || !exists {
 		return "", Range{}, false, err
 	}

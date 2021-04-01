@@ -19,7 +19,7 @@ func (s *Store) PackageInformation(ctx context.Context, bundleID int, path, pack
 	}})
 	defer endObservation(1, observation.Args{})
 
-	documentData, exists, err := s.scanFirstDocumentData(s.Store.Query(ctx, sqlf.Sprintf(packageInformationQuery, bundleID, path)))
+	documentData, exists, err := s.makeFirstDocumentDataScanner(DocumentDataColumnPackageInformation)(s.Store.Query(ctx, sqlf.Sprintf(packageInformationQuery, bundleID, path)))
 	if err != nil || !exists {
 		return semantic.PackageInformationData{}, false, err
 	}
