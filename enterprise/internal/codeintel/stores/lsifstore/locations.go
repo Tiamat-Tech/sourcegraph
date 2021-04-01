@@ -344,7 +344,7 @@ func (s *Store) readRangesFromDocuments(ctx context.Context, bundleID int, ids [
 
 const readRangesFromDocumentsQuery = `
 -- source: enterprise/internal/codeintel/stores/lsifstore/locations.go:readRangesFromDocuments
-SELECT path, data FROM lsif_data_documents WHERE dump_id = %s AND path IN (%s)
+SELECT dump_id, path, data FROM lsif_data_documents WHERE dump_id = %s AND path IN (%s)
 `
 
 // readRangesFromDocument extracts range data from the given document. This method populates the given locationsByResultId

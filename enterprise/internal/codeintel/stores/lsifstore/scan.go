@@ -42,19 +42,13 @@ func (s *Store) makeDocumentVisitor(rows *sql.Rows, queryErr error) func(func(st
 		}
 		defer func() { err = basestore.CloseRows(rows, err) }()
 
-		var rawData []byte
 		for rows.Next() {
-			var path string
-			if err := rows.Scan(&path, &rawData); err != nil {
-				return err
-			}
-
-			data, err := s.serializer.UnmarshalDocumentData(rawData)
+			record, err := s.scanSingleDocumentDataObject(rows)
 			if err != nil {
 				return err
 			}
 
-			f(path, data)
+			f(record.Path, record.Document)
 		}
 
 		return nil
