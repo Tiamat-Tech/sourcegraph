@@ -6,6 +6,41 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
+func TestNewVersionFromString(t *testing.T) {
+	testCases := []struct {
+		v       string
+		version Version
+		patch   int
+		ok      bool
+	}{
+		{"3.50", NewVersion(3, 50), 0, true},
+		{"v3.50.3", NewVersion(3, 50), 3, true},
+		{"v3.50", NewVersion(3, 50), 0, true},
+		{"3.50.3", NewVersion(3, 50), 3, true},
+		{"3.50.3+dev", newDevVersion(3, 50), 3, true},
+		{"350", Version{}, 0, false},
+		{"350+dev", Version{}, 0, false},
+		{"2023.03.23+204874.db2922", NewVersion(2023, 03), 23, true},          // Cody App
+		{"2023.03.23-insiders+204874.db2922", NewVersion(2023, 03), 23, true}, // Cody App
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.v, func(t *testing.T) {
+			version, patch, ok := NewVersionAndPatchFromString(testCase.v)
+			if ok != testCase.ok {
+				t.Errorf("unexpected ok. want=%v have=%v", testCase.ok, ok)
+			} else {
+				if version != testCase.version {
+					t.Errorf("unexpected version. want=%s have=%s", testCase.version, version)
+				}
+				if patch != testCase.patch {
+					t.Errorf("unexpected patch. want=%d have=%d", testCase.patch, patch)
+				}
+			}
+		})
+	}
+}
+
 func TestCompareVersions(t *testing.T) {
 	testCases := []struct {
 		left     Version
@@ -34,11 +69,11 @@ func TestUpgradeRange(t *testing.T) {
 		expected []Version
 		err      bool
 	}{
-		{from: Version{3, 12}, to: Version{3, 10}, err: true},
-		{from: Version{3, 12}, to: Version{3, 12}, err: true},
-		{from: Version{3, 12}, to: Version{3, 13}, expected: []Version{{3, 12}, {3, 13}}},
-		{from: Version{3, 12}, to: Version{3, 16}, expected: []Version{{3, 12}, {3, 13}, {3, 14}, {3, 15}, {3, 16}}},
-		{from: Version{3, 42}, to: Version{4, 2}, expected: []Version{{3, 42}, {3, 43}, {4, 0}, {4, 1}, {4, 2}}},
+		{from: Version{Major: 3, Minor: 12}, to: Version{Major: 3, Minor: 10}, err: true},
+		{from: Version{Major: 3, Minor: 12}, to: Version{Major: 3, Minor: 12}, err: true},
+		{from: Version{Major: 3, Minor: 12}, to: Version{Major: 3, Minor: 13}, expected: []Version{{Major: 3, Minor: 12}, {Major: 3, Minor: 13}}},
+		{from: Version{Major: 3, Minor: 12}, to: Version{Major: 3, Minor: 16}, expected: []Version{{Major: 3, Minor: 12}, {Major: 3, Minor: 13}, {Major: 3, Minor: 14}, {Major: 3, Minor: 15}, {Major: 3, Minor: 16}}},
+		{from: Version{Major: 3, Minor: 42}, to: Version{Major: 4, Minor: 2}, expected: []Version{{Major: 3, Minor: 42}, {Major: 3, Minor: 43}, {Major: 4}, {Major: 4, Minor: 1}, {Major: 4, Minor: 2}}},
 	}
 
 	for _, testCase := range testCases {

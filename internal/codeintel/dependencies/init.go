@@ -1,45 +1,33 @@
 package dependencies
 
 import (
-	"sync"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"go.opentelemetry.io/otel"
-
-	"github.com/sourcegraph/log"
-
-	"github.com/sourcegraph/sourcegraph/internal/codeintel/dependencies/internal/store"
+	"github.com/sourcegraph/sourcegraph/internal/codeintel/dependencies/internal/background"
+	dependenciesstore "github.com/sourcegraph/sourcegraph/internal/codeintel/dependencies/internal/store"
 	"github.com/sourcegraph/sourcegraph/internal/database"
+	"github.com/sourcegraph/sourcegraph/internal/goroutine"
 	"github.com/sourcegraph/sourcegraph/internal/observation"
-	"github.com/sourcegraph/sourcegraph/internal/trace"
 )
 
-var (
-	svc     *Service
-	svcOnce sync.Once
-)
-
-// GetService creates or returns an already-initialized dependencies service. If the service is
-// new, it will use the given database handle and git/syncer instances.
-func GetService(db database.DB) *Service {
-	svcOnce.Do(func() {
-		storeObservationCtx := &observation.Context{
-			Logger:     log.Scoped("dependencies.store", "dependencies store"),
-			Tracer:     &trace.Tracer{TracerProvider: otel.GetTracerProvider()},
-			Registerer: prometheus.DefaultRegisterer,
-		}
-		var store store.Store = store.New(db, storeObservationCtx)
-
-		svc = newService(store)
-	})
-
-	return svc
+func NewService(observationCtx *observation.Context, db database.DB) *Service {
+	return newService(scopedContext("service", observationCtx), dependenciesstore.New(scopedContext("store", observationCtx), db))
 }
 
-// TestService creates a fresh dependencies service with the given database handle and git/syncer
-// instances.
+// TestService creates a new dependencies service with noop observation contexts.
 func TestService(db database.DB) *Service {
-	store := store.New(db, &observation.TestContext)
+	store := dependenciesstore.New(&observation.TestContext, db)
 
-	return newService(store)
+	return newService(&observation.TestContext, store)
+}
+
+func scopedContext(component string, parent *observation.Context) *observation.Context {
+	return observation.ScopedContext("codeintel", "dependencies", component, parent)
+}
+
+func PackageFiltersJob(
+	obsctx *observation.Context,
+	db database.DB,
+) goroutine.CombinedRoutine {
+	return []goroutine.BackgroundRoutine{
+		background.NewPackagesFilterApplicator(obsctx, db),
+	}
 }

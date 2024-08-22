@@ -7,10 +7,11 @@ import (
 )
 
 type Search struct {
+	Ctx       context.Context
 	DateRange string
 	Grouping  string
 	DB        database.DB
-	Cache     bool
+	Cache     KeyValue
 }
 
 func (s *Search) Searches() (*AnalyticsFetcher, error) {
@@ -43,6 +44,7 @@ func (s *Search) ResultClicks() (*AnalyticsFetcher, error) {
 		nodesQuery:   nodesQuery,
 		summaryQuery: summaryQuery,
 		group:        "Search:ResultClicked",
+		cache:        NoopCache{},
 	}, nil
 }
 
@@ -86,8 +88,25 @@ func (s *Search) FileOpens() (*AnalyticsFetcher, error) {
 	}, nil
 }
 
+func (s *Search) CodeCopied() (*AnalyticsFetcher, error) {
+	nodesQuery, summaryQuery, err := makeEventLogsQueries(s.DateRange, s.Grouping, []string{"CodeCopied"})
+	if err != nil {
+		return nil, err
+	}
+
+	return &AnalyticsFetcher{
+		db:           s.DB,
+		dateRange:    s.DateRange,
+		grouping:     s.Grouping,
+		nodesQuery:   nodesQuery,
+		summaryQuery: summaryQuery,
+		group:        "Search:CodeCopied",
+		cache:        s.Cache,
+	}, nil
+}
+
 func (s *Search) CacheAll(ctx context.Context) error {
-	fetcherBuilders := []func() (*AnalyticsFetcher, error){s.Searches, s.FileViews, s.FileOpens, s.ResultClicks}
+	fetcherBuilders := []func() (*AnalyticsFetcher, error){s.Searches, s.FileViews, s.FileOpens, s.ResultClicks, s.CodeCopied}
 	for _, buildFetcher := range fetcherBuilders {
 		fetcher, err := buildFetcher()
 		if err != nil {

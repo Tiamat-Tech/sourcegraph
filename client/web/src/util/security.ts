@@ -1,13 +1,11 @@
-import { SourcegraphContext } from '../jscontext'
+import { logger } from '@sourcegraph/common'
+
+import type { SourcegraphContext } from '../jscontext'
 
 export function validatePassword(
     context: Pick<
         SourcegraphContext,
-        | 'authProviders'
-        | 'sourcegraphDotComMode'
-        | 'experimentalFeatures'
-        | 'authPasswordPolicy'
-        | 'authMinPasswordLength'
+        'authProviders' | 'sourcegraphDotComMode' | 'authPasswordPolicy' | 'authMinPasswordLength'
     >,
     password: string
 ): string | undefined {
@@ -61,11 +59,7 @@ export function validatePassword(
 export function getPasswordRequirements(
     context: Pick<
         SourcegraphContext,
-        | 'authProviders'
-        | 'sourcegraphDotComMode'
-        | 'experimentalFeatures'
-        | 'authPasswordPolicy'
-        | 'authMinPasswordLength'
+        'authProviders' | 'sourcegraphDotComMode' | 'authPasswordPolicy' | 'authMinPasswordLength'
     >
 ): string {
     const passwordPolicyReference = context.authPasswordPolicy
@@ -73,7 +67,7 @@ export function getPasswordRequirements(
     let requirements: string = 'At least ' + context.authMinPasswordLength.toString() + ' characters'
 
     if (passwordPolicyReference?.enabled) {
-        console.log('Using enhanced password policy.')
+        logger.log('Using enhanced password policy.')
 
         if (
             passwordPolicyReference.numberOfSpecialCharacters &&
@@ -90,4 +84,13 @@ export function getPasswordRequirements(
     }
 
     return requirements
+}
+
+export const generateSecret = (): string => {
+    let text = ''
+    const possible = 'ABCDEF0123456789'
+    for (let index = 0; index < 12; index++) {
+        text += possible.charAt(Math.floor(Math.random() * possible.length))
+    }
+    return text
 }

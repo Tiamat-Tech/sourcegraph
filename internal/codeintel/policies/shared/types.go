@@ -1,17 +1,7 @@
 package shared
 
-import "time"
-
-type Policy struct {
-	ID int
-}
-
-type GitObjectType string
-
-const (
-	GitObjectTypeCommit GitObjectType = "GIT_COMMIT"
-	GitObjectTypeTag    GitObjectType = "GIT_TAG"
-	GitObjectTypeTree   GitObjectType = "GIT_TREE"
+import (
+	"time"
 )
 
 type ConfigurationPolicy struct {
@@ -25,9 +15,43 @@ type ConfigurationPolicy struct {
 	RetentionEnabled          bool
 	RetentionDuration         *time.Duration
 	RetainIntermediateCommits bool
-	IndexingEnabled           bool
+	PreciseIndexingEnabled    bool
+	SyntacticIndexingEnabled  bool
 	IndexCommitMaxAge         *time.Duration
 	IndexIntermediateCommits  bool
+	EmbeddingEnabled          bool
+}
+
+type ConfigurationPolicyPatch struct {
+	ID                        int
+	RepositoryID              *int
+	RepositoryPatterns        *[]string
+	Name                      string
+	Type                      GitObjectType
+	Pattern                   string
+	Protected                 bool
+	RetentionEnabled          bool
+	RetentionDuration         *time.Duration
+	RetainIntermediateCommits bool
+	PreciseIndexingEnabled    bool
+	SyntacticIndexingEnabled  *bool
+	IndexCommitMaxAge         *time.Duration
+	IndexIntermediateCommits  bool
+	EmbeddingEnabled          bool
+}
+
+type GitObjectType string
+
+const (
+	GitObjectTypeCommit GitObjectType = "GIT_COMMIT"
+	GitObjectTypeTag    GitObjectType = "GIT_TAG"
+	GitObjectTypeTree   GitObjectType = "GIT_TREE"
+)
+
+type RetentionPolicyMatchCandidate struct {
+	*ConfigurationPolicy
+	Matched           bool
+	ProtectingCommits []string
 }
 
 type GetConfigurationPoliciesOptions struct {
@@ -39,49 +63,28 @@ type GetConfigurationPoliciesOptions struct {
 	// Term is a string to search within the configuration title.
 	Term string
 
-	// ForIndexing indicates that only configuration policies with data retention enabled
-	// should be returned.
-	ForDataRetention bool
+	// If supplied, filter the policies by their protected flag.
+	Protected *bool
 
-	// ForIndexing indicates that only configuration policies with indexing enabled should
-	// be returned.
-	ForIndexing bool
+	// ForIndexing indicates that configuration policies with data retention enabled
+	// should be returned (or filtered).
+	ForDataRetention *bool
+
+	// ForPreciseIndexing indicates that configuration policies with precise indexing enabled should
+	// be returned (or filtered).
+	ForPreciseIndexing *bool
+
+	// ForSyntacticIndexing indicates that configuration policies with syntactic indexing enabled should
+	// be returned (or filtered).
+	ForSyntacticIndexing *bool
+
+	// ForEmbeddings indicates that configuration policies with embeddings enabled
+	// should be returned (or filtered).
+	ForEmbeddings *bool
 
 	// Limit indicates the number of results to take from the result set.
 	Limit int
 
 	// Offset indicates the number of results to skip in the result set.
 	Offset int
-}
-
-// Upload is a subset of the lsif_uploads table and stores both processed and unprocessed
-// records.
-type Upload struct {
-	ID                int
-	Commit            string
-	Root              string
-	VisibleAtTip      bool
-	UploadedAt        time.Time
-	State             string
-	FailureMessage    *string
-	StartedAt         *time.Time
-	FinishedAt        *time.Time
-	ProcessAfter      *time.Time
-	NumResets         int
-	NumFailures       int
-	RepositoryID      int
-	RepositoryName    string
-	Indexer           string
-	IndexerVersion    string
-	NumParts          int
-	UploadedParts     []int
-	UploadSize        *int64
-	Rank              *int
-	AssociatedIndexID *int
-}
-
-type RetentionPolicyMatchCandidate struct {
-	*ConfigurationPolicy
-	Matched           bool
-	ProtectingCommits []string
 }

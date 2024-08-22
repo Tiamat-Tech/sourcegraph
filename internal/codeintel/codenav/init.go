@@ -1,42 +1,38 @@
 package codenav
 
 import (
-	"sync"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"go.opentelemetry.io/otel"
-
 	"github.com/sourcegraph/log"
 
 	"github.com/sourcegraph/sourcegraph/internal/codeintel/codenav/internal/lsifstore"
-	"github.com/sourcegraph/sourcegraph/internal/codeintel/codenav/internal/store"
+	codeintelshared "github.com/sourcegraph/sourcegraph/internal/codeintel/shared"
 	"github.com/sourcegraph/sourcegraph/internal/database"
+	"github.com/sourcegraph/sourcegraph/internal/gitserver"
 	"github.com/sourcegraph/sourcegraph/internal/observation"
-	"github.com/sourcegraph/sourcegraph/internal/symbols"
-	"github.com/sourcegraph/sourcegraph/internal/trace"
+	searchClient "github.com/sourcegraph/sourcegraph/internal/search/client"
 )
 
-var (
-	svc     *Service
-	svcOnce sync.Once
-)
+func NewService(
+	observationCtx *observation.Context,
+	db database.DB,
+	codeIntelDB codeintelshared.CodeIntelDB,
+	uploadSvc UploadService,
+	gitserver gitserver.Client,
+) *Service {
+	lsifStore := lsifstore.New(scopedContext("lsifstore", observationCtx), codeIntelDB)
+	logger := log.Scoped("codenav")
+	searcher := searchClient.New(logger, db, gitserver)
 
-// GetService creates or returns an already-initialized symbols service. If the service is
-// new, it will use the given database handle.
-func GetService(db, codeIntelDB database.DB, uploadSvc UploadService, gitserver GitserverClient, symbolsClient *symbols.Client) *Service {
-	svcOnce.Do(func() {
-		oc := func(name string) *observation.Context {
-			return &observation.Context{
-				Logger:     log.Scoped("symbols."+name, "codeintel symbols "+name),
-				Tracer:     &trace.Tracer{TracerProvider: otel.GetTracerProvider()},
-				Registerer: prometheus.DefaultRegisterer,
-			}
-		}
+	return newService(
+		observationCtx,
+		db.Repos(),
+		lsifStore,
+		uploadSvc,
+		gitserver,
+		searcher,
+		logger,
+	)
+}
 
-		store := store.New(db, oc("store"))
-		lsifstore := lsifstore.New(codeIntelDB, oc("lsifstore"))
-		svc = newService(store, lsifstore, uploadSvc, gitserver, symbolsClient, oc("service"))
-	})
-
-	return svc
+func scopedContext(component string, parent *observation.Context) *observation.Context {
+	return observation.ScopedContext("codeintel", "codenav", component, parent)
 }

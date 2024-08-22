@@ -1,45 +1,66 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/urfave/cli/v2"
 
-	"github.com/sourcegraph/sourcegraph/dev/sg/cliutil"
-	"github.com/sourcegraph/sourcegraph/dev/sg/internal/run"
+	"github.com/sourcegraph/sourcegraph/dev/sg/internal/category"
 	"github.com/sourcegraph/sourcegraph/dev/sg/internal/std"
-	"github.com/sourcegraph/sourcegraph/lib/output"
+	"github.com/sourcegraph/sourcegraph/dev/sg/interrupt"
+	"github.com/sourcegraph/sourcegraph/lib/cliutil/completions"
 )
 
+var deprecationNotice = "[DEPRECATED] sg run is deprecated - use 'sg start -cmd' instead"
+
 func init() {
-	postInitHooks = append(postInitHooks, func(cmd *cli.Context) {
-		// Create 'sg run' help text after flag (and config) initialization
-		runCommand.Description = constructRunCmdLongHelp()
-	})
+	postInitHooks = append(postInitHooks,
+		func(cmd *cli.Context) {
+			// Create 'sg run' help text after flag (and config) initialization
+			runCommand.Description = constructRunCmdLongHelp()
+		},
+		func(cmd *cli.Context) {
+			ctx, cancel := context.WithCancel(cmd.Context)
+			interrupt.Register(func() {
+				cancel()
+			})
+			cmd.Context = ctx
+		},
+	)
+
 }
 
 var runCommand = &cli.Command{
-	Name:      "run",
-	Usage:     "Run the given commands",
-	ArgsUsage: "[command]",
+	Name:        "run",
+	Usage:       deprecationNotice,
+	ArgsUsage:   "[command]",
+	Description: deprecationNotice,
 	UsageText: `
-# Run specific commands:
+# Run specific commands
 sg run gitserver
 sg run frontend
 
-# List available commands (defined under 'commands:' in 'sg.config.yaml'):
+# List available commands (defined under 'commands:' in 'sg.config.yaml')
 sg run -help
 
-# Run multiple commands:
+# Run multiple commands
 sg run gitserver frontend repo-updater
-	`,
-	Category: CategoryDev,
-	Flags:    []cli.Flag{},
+
+# View configuration for a command
+sg run -describe jaeger
+`,
+	Category: category.Dev,
 	Action:   runExec,
-	BashComplete: cliutil.CompleteOptions(func() (options []string) {
+	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:  "describe",
+			Usage: "Print details about selected run target",
+		},
+	},
+	BashComplete: completions.CompleteArgs(func() (options []string) {
 		config, _ := getConfig()
 		if config == nil {
 			return
@@ -52,32 +73,17 @@ sg run gitserver frontend repo-updater
 }
 
 func runExec(ctx *cli.Context) error {
-	config, err := getConfig()
-	if err != nil {
-		return err
+	args := StartArgs{
+		Describe: ctx.Bool("describe"),
+		Commands: ctx.Args().Slice(),
 	}
-
-	args := ctx.Args().Slice()
-	if len(args) == 0 {
-		std.Out.WriteLine(output.Styled(output.StyleWarning, "No command specified"))
-		return flag.ErrHelp
-	}
-
-	var cmds []run.Command
-	for _, arg := range args {
-		cmd, ok := config.Commands[arg]
-		if !ok {
-			std.Out.WriteLine(output.Styledf(output.StyleWarning, "ERROR: command %q not found :(", arg))
-			return flag.ErrHelp
-		}
-		cmds = append(cmds, cmd)
-	}
-
-	return run.Commands(ctx.Context, config.Env, verbose, cmds...)
+	return start(ctx.Context, args)
 }
 
 func constructRunCmdLongHelp() string {
 	var out strings.Builder
+
+	fmt.Fprint(&out, deprecationNotice)
 
 	fmt.Fprintf(&out, "Runs the given command. If given a whitespace-separated list of commands it runs the set of commands.\n")
 
@@ -94,8 +100,8 @@ func constructRunCmdLongHelp() string {
 
 	var names []string
 	for name, command := range config.Commands {
-		if command.Description != "" {
-			name = fmt.Sprintf("%s: %s", name, command.Description)
+		if command.Config.Description != "" {
+			name = fmt.Sprintf("%s: %s", name, command.Config.Description)
 		}
 		names = append(names, name)
 	}

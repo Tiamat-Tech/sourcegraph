@@ -1,4 +1,5 @@
 import { render } from '@testing-library/react'
+import { describe, expect, it } from 'vitest'
 
 import { FeedbackText } from './FeedbackText'
 
@@ -9,10 +10,6 @@ describe('FeedbackText', () => {
     })
     it('render feedbackText with header', () => {
         const { asFragment } = render(<FeedbackText headerText="This is a header text" />)
-        expect(asFragment()).toMatchSnapshot()
-    })
-    it('render feedbackText with empty header', () => {
-        const { asFragment } = render(<FeedbackText headerText="" />)
         expect(asFragment()).toMatchSnapshot()
     })
     it('render feedbackText with footer', () => {

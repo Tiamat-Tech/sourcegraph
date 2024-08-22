@@ -1,11 +1,13 @@
-import { Key, ModifierKey } from './keys'
+import { isMacPlatform } from '@sourcegraph/common'
+
+import { type Key, MODIFIER_KEYS, type ModifierKey } from './keys'
 
 const ON_MATCH_DELAY = 500
 
 export interface Data {
     node: HTMLElement | null | undefined
     ordered: Key[]
-    held?: ModifierKey[]
+    held?: (ModifierKey | 'Mod')[]
     ignoreInput: boolean
     onMatch(matched: { ordered: Key[]; held?: ModifierKey[] }): void
     allowDefault: boolean
@@ -46,16 +48,19 @@ export class ShortcutManager {
         this.updateMatchingShortcuts(event)
 
         switch (this.shortcutsMatched.length) {
-            case 0:
+            case 0: {
                 this.resetKeys()
                 break
-            case 1:
+            }
+            case 1: {
                 this.callMatchedShortcut(event)
                 break
-            default:
+            }
+            default: {
                 this.timer = window.setTimeout(() => {
                     this.callMatchedShortcut(event)
                 }, ON_MATCH_DELAY)
+            }
         }
     }
 
@@ -67,7 +72,11 @@ export class ShortcutManager {
                 return false
             }
 
-            if (held && !held.every(key => event.getModifierState(key))) {
+            if (held && !isModifierHeld(held, event)) {
+                return false
+            }
+
+            if (!held && isAnyModifierKeyHeld(event)) {
                 return false
             }
 
@@ -95,15 +104,34 @@ export class ShortcutManager {
             event.preventDefault()
         }
 
+        const modKey = getModKey()
         longestMatchingShortcut.onMatch({
             ordered: longestMatchingShortcut.ordered,
-            held: longestMatchingShortcut.held,
+            held: longestMatchingShortcut.held?.map(key => (key === 'Mod' ? modKey : key)),
         })
 
         clearTimeout(this.timer)
 
         this.resetKeys()
     }
+}
+
+function isModifierHeld(held: Exclude<Data['held'], undefined>, event: KeyboardEvent): boolean {
+    // It would be better to only call this once when the module loads but
+    // calling it here makes the code easier to test
+    const modKey = getModKey()
+    return held.every(key => event.getModifierState(key === 'Mod' ? modKey : key))
+}
+
+function isAnyModifierKeyHeld(event: KeyboardEvent): boolean {
+    return MODIFIER_KEYS.some(key => event.getModifierState(key))
+}
+
+/**
+ * Returns the physicial key for the virtual 'Mod' key for the current platform.
+ */
+export function getModKey(): 'Control' | 'Meta' {
+    return isMacPlatform() ? 'Meta' : 'Control'
 }
 
 function isFocusedInput(): boolean {

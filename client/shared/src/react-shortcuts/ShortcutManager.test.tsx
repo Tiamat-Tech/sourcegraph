@@ -1,40 +1,44 @@
-import * as React from 'react'
-
-import { act, createEvent, fireEvent, render } from '@testing-library/react'
+import { createEvent, fireEvent, render } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as sinon from 'sinon'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import { ModifierKey } from './keys'
+import { platform } from '../testing/dom-utils'
 
 import { Shortcut, ShortcutProvider } from '.'
+import type { ModifierKey } from './keys'
 
 describe('ShortcutManager', () => {
     // We only want to preserve the original implementation, not call it as a
     // function.
-    // eslint-disable-next-line @typescript-eslint/unbound-method
+
     const originalGetModifierState = KeyboardEvent.prototype.getModifierState
 
     beforeAll(() => {
-        jest.useFakeTimers()
+        vi.useFakeTimers()
         // jsdom doesn't implement getModifierState properly:
         // https://github.com/jsdom/jsdom/issues/3126
         KeyboardEvent.prototype.getModifierState = function (key: string): boolean {
             switch (key) {
-                case 'Alt':
+                case 'Alt': {
                     return this.altKey
-                case 'Control':
+                }
+                case 'Control': {
                     return this.ctrlKey
-                case 'Meta':
+                }
+                case 'Meta': {
                     return this.metaKey
-                case 'Shift':
+                }
+                case 'Shift': {
                     return this.shiftKey
+                }
             }
             return false
         }
     })
 
     afterAll(() => {
-        jest.useRealTimers()
+        vi.useRealTimers()
         KeyboardEvent.prototype.getModifierState = originalGetModifierState
     })
 
@@ -90,7 +94,7 @@ describe('ShortcutManager', () => {
 
         sinon.assert.notCalled(foSpy)
 
-        jest.runAllTimers()
+        vi.runAllTimers()
 
         sinon.assert.notCalled(fSpy)
         sinon.assert.calledOnce(foSpy)
@@ -109,7 +113,7 @@ describe('ShortcutManager', () => {
 
         sinon.assert.notCalled(spy)
 
-        jest.runAllTimers()
+        vi.runAllTimers()
 
         sinon.assert.notCalled(spy)
     })
@@ -125,27 +129,9 @@ describe('ShortcutManager', () => {
 
         userEvent.keyboard('fo')
 
-        jest.runAllTimers()
+        vi.runAllTimers()
 
         sinon.assert.notCalled(spy)
-    })
-
-    it.skip('calls shortcuts that are scoped to a specific node only when that node is focused', () => {
-        // This test is meaningless atm because the current implementation of
-        // Shortcut doesn't actually work for scoped events.
-
-        const spy = sinon.spy()
-
-        act(() => {
-            render(
-                <ShortcutProvider>
-                    <ShortcutWithFocus spy={spy} />
-                </ShortcutProvider>
-            )
-        })
-
-        userEvent.keyboard('z')
-        sinon.assert.called(spy)
     })
 
     it('only registers a unique shortcut once', () => {
@@ -160,7 +146,7 @@ describe('ShortcutManager', () => {
 
         userEvent.keyboard('foo')
 
-        jest.runAllTimers()
+        vi.runAllTimers()
 
         sinon.assert.calledOnce(spy)
     })
@@ -259,49 +245,52 @@ describe('ShortcutManager', () => {
 
             sinon.assert.notCalled(fooSpy)
         })
+
+        it('maps the special value "Mod" to "Control"', () => {
+            const fooSpy = sinon.spy()
+
+            render(
+                <ShortcutProvider>
+                    <Shortcut held={['Mod']} ordered={['/']} onMatch={fooSpy} />
+                </ShortcutProvider>
+            )
+
+            userEvent.keyboard('{Control>}/{/Control}')
+
+            sinon.assert.called(fooSpy)
+        })
+
+        it('maps the special value "Mod" to "Meta" (Cmd) on macOS', () => {
+            platform.set('mac')
+
+            const fooSpy = sinon.spy()
+
+            render(
+                <ShortcutProvider>
+                    <Shortcut held={['Mod']} ordered={['/']} onMatch={fooSpy} />
+                </ShortcutProvider>
+            )
+
+            userEvent.keyboard('{Meta>}/{/Meta}')
+
+            sinon.assert.called(fooSpy)
+
+            platform.reset()
+        })
+
+        it("doesn't match shortcut when any modifier key is held, but no modifier key is defined for the shortcut", () => {
+            const fooSpy = sinon.spy()
+
+            render(
+                <ShortcutProvider>
+                    <Shortcut ordered={['/']} onMatch={fooSpy} />
+                </ShortcutProvider>
+            )
+
+            for (const key of ['Alt', 'Control', 'Meta', 'Shift']) {
+                userEvent.keyboard(`{${key}>}/{/${key}}`)
+                sinon.assert.notCalled(fooSpy)
+            }
+        })
     })
 })
-
-interface Props {
-    spy: sinon.SinonSpy
-}
-
-interface State {
-    node: HTMLElement | null
-}
-
-// This component isn't used currently. It and the corresponding test need
-// to be updated.
-// eslint-disable-next-line react/no-unsafe
-class ShortcutWithFocus extends React.Component<Props, State> {
-    public state: State = {
-        node: null,
-    }
-
-    public UNSAFE_componentWillUpdate(): void {
-        const { node } = this.state
-
-        if (!node) {
-            return
-        }
-
-        node.focus()
-    }
-
-    public render(): React.ReactNode {
-        const { spy } = this.props
-        const { node } = this.state
-        return (
-            <div className="app">
-                <button type="button" ref={this.setRef} />
-                <Shortcut ordered={['z']} onMatch={spy} node={node} />
-            </div>
-        )
-    }
-
-    private setRef = (node: HTMLElement | null) => {
-        this.setState({
-            node,
-        })
-    }
-}

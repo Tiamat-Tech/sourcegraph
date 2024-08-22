@@ -2,15 +2,19 @@ package uploads
 
 import (
 	"context"
+	"time"
 
-	"github.com/sourcegraph/sourcegraph/internal/codeintel/stores/gitserver"
-	"github.com/sourcegraph/sourcegraph/internal/database/locker"
+	"github.com/sourcegraph/sourcegraph/internal/codeintel/uploads/internal/background/expirer"
+	"github.com/sourcegraph/sourcegraph/internal/codeintel/uploads/internal/background/processor"
+	"github.com/sourcegraph/sourcegraph/internal/codeintel/uploads/shared"
 )
 
-type Locker interface {
-	Lock(ctx context.Context, key int32, blocking bool) (bool, locker.UnlockFunc, error)
+type UploadService interface {
+	GetDirtyRepositories(ctx context.Context) (_ []shared.DirtyRepository, err error)
+	GetRepositoriesMaxStaleAge(ctx context.Context) (_ time.Duration, err error)
 }
 
-type CommitCache interface {
-	ExistsBatch(ctx context.Context, commits []gitserver.RepositoryCommit) ([]bool, error)
-}
+type (
+	RepoStore     = processor.RepoStore
+	PolicyService = expirer.PolicyService
+)

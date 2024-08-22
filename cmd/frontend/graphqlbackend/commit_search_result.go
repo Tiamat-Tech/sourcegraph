@@ -3,9 +3,8 @@ package graphqlbackend
 import (
 	"sync"
 
-	"github.com/sourcegraph/log"
-
 	"github.com/sourcegraph/sourcegraph/internal/database"
+	"github.com/sourcegraph/sourcegraph/internal/gitserver"
 	"github.com/sourcegraph/sourcegraph/internal/search/result"
 )
 
@@ -19,7 +18,6 @@ type CommitSearchResultResolver struct {
 	// Use Commit() instead.
 	gitCommitResolver *GitCommitResolver
 	gitCommitOnce     sync.Once
-	logger            log.Logger
 }
 
 func (r *CommitSearchResultResolver) Commit() *GitCommitResolver {
@@ -27,8 +25,9 @@ func (r *CommitSearchResultResolver) Commit() *GitCommitResolver {
 		if r.gitCommitResolver != nil {
 			return
 		}
-		repoResolver := NewRepositoryResolver(r.db, r.Repo.ToRepo())
-		r.gitCommitResolver = NewGitCommitResolver(r.db, repoResolver, r.CommitMatch.Commit.ID, &r.CommitMatch.Commit)
+		gitserverClient := gitserver.NewClient("graphql.search.commitresult")
+		repoResolver := NewMinimalRepositoryResolver(r.db, gitserverClient, r.Repo.ID, r.Repo.Name)
+		r.gitCommitResolver = NewGitCommitResolver(r.db, gitserverClient, repoResolver, r.CommitMatch.Commit.ID, &r.CommitMatch.Commit)
 	})
 	return r.gitCommitResolver
 }

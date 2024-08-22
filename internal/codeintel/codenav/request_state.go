@@ -3,9 +3,15 @@ package codenav
 import (
 	"sync"
 
+	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/sourcegraph/sourcegraph/internal/api"
 	"github.com/sourcegraph/sourcegraph/internal/authz"
-	"github.com/sourcegraph/sourcegraph/internal/codeintel/codenav/shared"
-	"github.com/sourcegraph/sourcegraph/internal/types"
+	"github.com/sourcegraph/sourcegraph/internal/codeintel/core"
+	"github.com/sourcegraph/sourcegraph/internal/codeintel/uploads/shared"
+	"github.com/sourcegraph/sourcegraph/internal/database"
+	"github.com/sourcegraph/sourcegraph/internal/gitserver"
+	sgTypes "github.com/sourcegraph/sourcegraph/internal/types"
 )
 
 type RequestState struct {
@@ -22,32 +28,57 @@ type RequestState struct {
 	maximumIndexesPerMonikerSearch int
 
 	authChecker authz.SubRepoPermissionChecker
+
+	RepositoryID api.RepoID
+	Commit       api.CommitID
+	Path         core.RepoRelPath
+}
+
+func (r *RequestState) Attrs() []attribute.KeyValue {
+	out := []attribute.KeyValue{
+		attribute.Int("repositoryID", int(r.RepositoryID)),
+		attribute.String("commit", string(r.Commit)),
+		attribute.String("path", r.Path.RawValue()),
+	}
+	if r.dataLoader != nil {
+		uploads := r.dataLoader.uploads
+		out = append(out, attribute.Int("numUploads", len(uploads)), attribute.String("uploads", uploadIDsToString(uploads)))
+	}
+	return out
 }
 
 func NewRequestState(
-	uploads []shared.Dump,
+	uploads []shared.CompletedUpload,
+	repoStore database.RepoStore,
 	authChecker authz.SubRepoPermissionChecker,
-	gitclient shared.GitserverClient, repo *types.Repo, commit, path string,
+	gitserverClient gitserver.Client,
+	repo *sgTypes.Repo,
+	commit api.CommitID,
+	path core.RepoRelPath,
 	maxIndexes int,
-	hunkCacheSize int,
 ) RequestState {
-	r := &RequestState{}
+	r := &RequestState{
+		// repoStore:    repoStore,
+		RepositoryID: repo.ID,
+		Commit:       commit,
+		Path:         path,
+	}
 	r.SetUploadsDataLoader(uploads)
 	r.SetAuthChecker(authChecker)
-	r.SetLocalGitTreeTranslator(gitclient, repo, commit, path, hunkCacheSize)
-	r.SetLocalCommitCache(gitclient)
+	r.SetLocalGitTreeTranslator(gitserverClient, repo)
+	r.SetLocalCommitCache(repoStore, gitserverClient)
 	r.SetMaximumIndexesPerMonikerSearch(maxIndexes)
 
 	return *r
 }
 
-func (r RequestState) GetCacheUploads() []shared.Dump {
+func (r RequestState) GetCacheUploads() []shared.CompletedUpload {
 	return r.dataLoader.uploads
 }
 
-func (r RequestState) GetCacheUploadsAtIndex(index int) shared.Dump {
+func (r RequestState) GetCacheUploadsAtIndex(index int) shared.CompletedUpload {
 	if index < 0 || index >= len(r.dataLoader.uploads) {
-		return shared.Dump{}
+		return shared.CompletedUpload{}
 	}
 
 	return r.dataLoader.uploads[index]
@@ -57,32 +88,19 @@ func (r *RequestState) SetAuthChecker(authChecker authz.SubRepoPermissionChecker
 	r.authChecker = authChecker
 }
 
-func (r *RequestState) SetUploadsDataLoader(uploads []shared.Dump) {
+func (r *RequestState) SetUploadsDataLoader(uploads []shared.CompletedUpload) {
 	r.dataLoader = NewUploadsDataLoader()
 	for _, upload := range uploads {
 		r.dataLoader.AddUpload(upload)
 	}
 }
 
-func (r *RequestState) SetLocalGitTreeTranslator(client shared.GitserverClient, repo *types.Repo, commit, path string, hunkCacheSize int) error {
-	hunkCache, err := NewHunkCache(hunkCacheSize)
-	if err != nil {
-		return err
-	}
-
-	args := &requestArgs{
-		repo:   repo,
-		commit: commit,
-		path:   path,
-	}
-
-	r.GitTreeTranslator = NewGitTreeTranslator(client, args, hunkCache)
-
-	return nil
+func (r *RequestState) SetLocalGitTreeTranslator(client gitserver.Client, repo *sgTypes.Repo) {
+	r.GitTreeTranslator = NewGitTreeTranslator(client, *repo)
 }
 
-func (r *RequestState) SetLocalCommitCache(client shared.GitserverClient) {
-	r.commitCache = NewCommitCache(client)
+func (r *RequestState) SetLocalCommitCache(repoStore minimalRepoStore, client gitserver.Client) {
+	r.commitCache = NewCommitCache(repoStore, client)
 }
 
 func (r *RequestState) SetMaximumIndexesPerMonikerSearch(maxNumber int) {
@@ -90,18 +108,18 @@ func (r *RequestState) SetMaximumIndexesPerMonikerSearch(maxNumber int) {
 }
 
 type UploadsDataLoader struct {
-	uploads     []shared.Dump
-	uploadsByID map[int]shared.Dump
+	uploads     []shared.CompletedUpload
+	uploadsByID map[int]shared.CompletedUpload
 	cacheMutex  sync.RWMutex
 }
 
 func NewUploadsDataLoader() *UploadsDataLoader {
 	return &UploadsDataLoader{
-		uploadsByID: make(map[int]shared.Dump),
+		uploadsByID: make(map[int]shared.CompletedUpload),
 	}
 }
 
-func (l *UploadsDataLoader) GetUploadFromCacheMap(id int) (shared.Dump, bool) {
+func (l *UploadsDataLoader) GetUploadFromCacheMap(id int) (shared.CompletedUpload, bool) {
 	l.cacheMutex.RLock()
 	defer l.cacheMutex.RUnlock()
 
@@ -109,16 +127,18 @@ func (l *UploadsDataLoader) GetUploadFromCacheMap(id int) (shared.Dump, bool) {
 	return upload, ok
 }
 
-func (l *UploadsDataLoader) SetUploadInCacheMap(uploads []shared.Dump) {
+func (l *UploadsDataLoader) SetUploadInCacheMap(uploads []shared.CompletedUpload) {
 	l.cacheMutex.Lock()
 	defer l.cacheMutex.Unlock()
 
+	// Sus, compare with AddUpload, where we're also appending the new uploads to l.uploads
+	// There seem to be invariants broken here, or not written down elsewhere
 	for i := range uploads {
 		l.uploadsByID[uploads[i].ID] = uploads[i]
 	}
 }
 
-func (l *UploadsDataLoader) AddUpload(dump shared.Dump) {
+func (l *UploadsDataLoader) AddUpload(dump shared.CompletedUpload) {
 	l.cacheMutex.Lock()
 	defer l.cacheMutex.Unlock()
 

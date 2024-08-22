@@ -4,19 +4,13 @@ import (
 	"context"
 	"io/fs"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/gobwas/glob"
-	lru "github.com/hashicorp/golang-lru"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"go.uber.org/atomic"
-	"golang.org/x/sync/singleflight"
 
 	"github.com/sourcegraph/sourcegraph/internal/actor"
 	"github.com/sourcegraph/sourcegraph/internal/api"
-	"github.com/sourcegraph/sourcegraph/internal/conf"
 	"github.com/sourcegraph/sourcegraph/lib/errors"
 )
 
@@ -43,7 +37,7 @@ type SubRepoPermissionChecker interface {
 	// If the userID represents an anonymous user, ErrUnauthenticated is returned.
 	Permissions(ctx context.Context, userID int32, content RepoContent) (Perms, error)
 
-	// FilePermissionFunc returns a FilePermissionFunc for userID in repo.
+	// FilePermissionsFunc returns a FilePermissionFunc for userID in repo.
 	// This function should only be used during the lifetime of a request. It
 	// exists to amortize the cost of checking many files in a repo.
 	//
@@ -53,8 +47,8 @@ type SubRepoPermissionChecker interface {
 	// Enabled indicates whether sub-repo permissions are enabled.
 	Enabled() bool
 
-	// EnabledForRepoId indicates whether sub-repo permissions are enabled for the given repoID
-	EnabledForRepoId(ctx context.Context, repoId api.RepoID) (bool, error)
+	// EnabledForRepoID indicates whether sub-repo permissions are enabled for the given repoID
+	EnabledForRepoID(ctx context.Context, repoID api.RepoID) (bool, error)
 
 	// EnabledForRepo indicates whether sub-repo permissions are enabled for the given repo
 	EnabledForRepo(ctx context.Context, repo api.RepoName) (bool, error)
@@ -68,11 +62,11 @@ var DefaultSubRepoPermsChecker SubRepoPermissionChecker = &noopPermsChecker{}
 
 type noopPermsChecker struct{}
 
-func (*noopPermsChecker) Permissions(ctx context.Context, userID int32, content RepoContent) (Perms, error) {
+func (*noopPermsChecker) Permissions(_ context.Context, _ int32, _ RepoContent) (Perms, error) {
 	return None, nil
 }
 
-func (*noopPermsChecker) FilePermissionsFunc(ctx context.Context, userID int32, repo api.RepoName) (FilePermissionFunc, error) {
+func (*noopPermsChecker) FilePermissionsFunc(_ context.Context, _ int32, _ api.RepoName) (FilePermissionFunc, error) {
 	return func(path string) (Perms, error) {
 		return None, nil
 	}, nil
@@ -82,362 +76,12 @@ func (*noopPermsChecker) Enabled() bool {
 	return false
 }
 
-func (*noopPermsChecker) EnabledForRepoId(ctx context.Context, repoId api.RepoID) (bool, error) {
+func (*noopPermsChecker) EnabledForRepoID(_ context.Context, _ api.RepoID) (bool, error) {
 	return false, nil
 }
 
-func (*noopPermsChecker) EnabledForRepo(ctx context.Context, repo api.RepoName) (bool, error) {
+func (*noopPermsChecker) EnabledForRepo(_ context.Context, _ api.RepoName) (bool, error) {
 	return false, nil
-}
-
-var _ SubRepoPermissionChecker = &SubRepoPermsClient{}
-
-// SubRepoPermissionsGetter allows getting sub repository permissions.
-type SubRepoPermissionsGetter interface {
-	// GetByUser returns the known sub repository permissions rules known for a user.
-	GetByUser(ctx context.Context, userID int32) (map[api.RepoName]SubRepoPermissions, error)
-
-	// RepoIdSupported returns true if repo with the given ID has sub-repo permissions
-	RepoIdSupported(ctx context.Context, repoId api.RepoID) (bool, error)
-
-	// RepoSupported returns true if repo with the given name has sub-repo permissions
-	RepoSupported(ctx context.Context, repo api.RepoName) (bool, error)
-}
-
-// SubRepoPermsClient is a concrete implementation of SubRepoPermissionChecker.
-// Always use NewSubRepoPermsClient to instantiate an instance.
-type SubRepoPermsClient struct {
-	permissionsGetter SubRepoPermissionsGetter
-	clock             func() time.Time
-	since             func(time.Time) time.Duration
-
-	group   *singleflight.Group
-	cache   *lru.Cache
-	enabled *atomic.Bool
-}
-
-const defaultCacheSize = 1000
-const defaultCacheTTL = 10 * time.Second
-
-// cachedRules caches the perms rules known for a particular user by repo.
-type cachedRules struct {
-	rules     map[api.RepoName]compiledRules
-	timestamp time.Time
-}
-
-type compiledRules struct {
-	includes    []glob.Glob
-	excludes    []glob.Glob
-	dirIncludes []glob.Glob
-}
-
-// NewSubRepoPermsClient instantiates an instance of authz.SubRepoPermsClient
-// which implements SubRepoPermissionChecker.
-//
-// SubRepoPermissionChecker is responsible for checking whether a user has access
-// to data within a repo. Sub-repository permissions enforcement is on top of
-// existing repository permissions, which means the user must already have access
-// to the repository itself. The intention is for this client to be created once
-// at startup and passed in to all places that need to check sub repo
-// permissions.
-//
-// Note that sub-repo permissions are currently opt-in via the
-// experimentalFeatures.enableSubRepoPermissions option.
-func NewSubRepoPermsClient(permissionsGetter SubRepoPermissionsGetter) (*SubRepoPermsClient, error) {
-	cache, err := lru.New(defaultCacheSize)
-	if err != nil {
-		return nil, errors.Wrap(err, "creating LRU cache")
-	}
-
-	enabled := atomic.NewBool(false)
-
-	conf.Watch(func() {
-		c := conf.Get()
-		if c.ExperimentalFeatures == nil || c.ExperimentalFeatures.SubRepoPermissions == nil {
-			enabled.Store(false)
-			return
-		}
-
-		cacheSize := c.ExperimentalFeatures.SubRepoPermissions.UserCacheSize
-		if cacheSize == 0 {
-			cacheSize = defaultCacheSize
-		}
-		cache.Resize(cacheSize)
-		enabled.Store(c.ExperimentalFeatures.SubRepoPermissions.Enabled)
-	})
-
-	return &SubRepoPermsClient{
-		permissionsGetter: permissionsGetter,
-		clock:             time.Now,
-		since:             time.Since,
-		group:             &singleflight.Group{},
-		cache:             cache,
-		enabled:           enabled,
-	}, nil
-}
-
-var (
-	metricSubRepoPermsPermissionsDurationSuccess prometheus.Observer
-	metricSubRepoPermsPermissionsDurationError   prometheus.Observer
-)
-
-func init() {
-	// We cache the result of WithLabelValues since we call them in
-	// performance sensitive code. See BenchmarkFilterActorPaths.
-	metric := promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name: "authz_sub_repo_perms_permissions_duration_seconds",
-		Help: "Time spent calculating permissions of a file for an actor.",
-	}, []string{"error"})
-	metricSubRepoPermsPermissionsDurationSuccess = metric.WithLabelValues("false")
-	metricSubRepoPermsPermissionsDurationError = metric.WithLabelValues("true")
-}
-
-var (
-	metricSubRepoPermCacheHit  prometheus.Counter
-	metricSubRepoPermCacheMiss prometheus.Counter
-)
-
-func init() {
-	// We cache the result of WithLabelValues since we call them in
-	// performance sensitive code. See BenchmarkFilterActorPaths.
-	metric := promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "authz_sub_repo_perms_permissions_cache_count",
-		Help: "The number of sub-repo perms cache hits or misses",
-	}, []string{"hit"})
-	metricSubRepoPermCacheHit = metric.WithLabelValues("true")
-	metricSubRepoPermCacheMiss = metric.WithLabelValues("false")
-}
-
-// Permissions return the current permissions granted to the given user on the
-// given content. If sub-repo permissions are disabled, it is a no-op that return
-// Read.
-func (s *SubRepoPermsClient) Permissions(ctx context.Context, userID int32, content RepoContent) (perms Perms, err error) {
-	// Are sub-repo permissions enabled at the site level
-	if !s.Enabled() {
-		return Read, nil
-	}
-
-	began := time.Now()
-	defer func() {
-		took := time.Since(began).Seconds()
-		if err == nil {
-			metricSubRepoPermsPermissionsDurationSuccess.Observe(took)
-		} else {
-			metricSubRepoPermsPermissionsDurationError.Observe(took)
-		}
-	}()
-
-	f, err := s.FilePermissionsFunc(ctx, userID, content.Repo)
-	if err != nil {
-		return None, err
-	}
-	return f(content.Path)
-}
-
-// filePermissionsFuncAllRead is a FilePermissionFunc which _always_ returns
-// Read. Only use in cases that sub repo permission checks should not be done.
-func filePermissionsFuncAllRead(_ string) (Perms, error) {
-	return Read, nil
-}
-
-func (s *SubRepoPermsClient) FilePermissionsFunc(ctx context.Context, userID int32, repo api.RepoName) (FilePermissionFunc, error) {
-	// Are sub-repo permissions enabled at the site level
-	if !s.Enabled() {
-		return filePermissionsFuncAllRead, nil
-	}
-
-	if s.permissionsGetter == nil {
-		return nil, errors.New("PermissionsGetter is nil")
-	}
-
-	if userID == 0 {
-		return nil, &ErrUnauthenticated{}
-	}
-
-	repoRules, err := s.getCompiledRules(ctx, userID)
-	if err != nil {
-		return nil, errors.Wrap(err, "compiling match rules")
-	}
-
-	rules, rulesExist := repoRules[repo]
-	if !rulesExist {
-		// If we make it this far it implies that we have access at the repo level.
-		// Having any empty set of rules here implies that we can access the whole repo.
-		// Repos that support sub-repo permissions will only have an entry in our
-		// repo_permissions table after all sub-repo permissions have been processed.
-		return filePermissionsFuncAllRead, nil
-	}
-
-	return func(path string) (Perms, error) {
-		// An empty path is equivalent to repo permissions so we can assume it has
-		// already been checked at that level.
-		if path == "" {
-			return Read, nil
-		}
-
-		// The current path needs to either be included or NOT excluded and we'll give
-		// preference to exclusion.
-		for _, rule := range rules.excludes {
-			if rule.Match(path) {
-				return None, nil
-			}
-		}
-		for _, rule := range rules.includes {
-			if rule.Match(path) {
-				return Read, nil
-			}
-		}
-
-		// We also want to match any directories above paths that we include so that we
-		// can browse down the file hierarchy.
-		if strings.HasSuffix(path, "/") {
-			for _, rule := range rules.dirIncludes {
-				if rule.Match(path) {
-					return Read, nil
-				}
-			}
-		}
-
-		// Return None if no rule matches to be safe
-		return None, nil
-	}, nil
-}
-
-// getCompiledRules fetches rules for the given repo with caching.
-func (s *SubRepoPermsClient) getCompiledRules(ctx context.Context, userID int32) (map[api.RepoName]compiledRules, error) {
-	// Fast path for cached rules
-	item, _ := s.cache.Get(userID)
-	cached, ok := item.(cachedRules)
-
-	ttl := defaultCacheTTL
-	if c := conf.Get(); c.ExperimentalFeatures != nil && c.ExperimentalFeatures.SubRepoPermissions != nil && c.ExperimentalFeatures.SubRepoPermissions.UserCacheTTLSeconds > 0 {
-		ttl = time.Duration(c.ExperimentalFeatures.SubRepoPermissions.UserCacheTTLSeconds) * time.Second
-	}
-
-	if ok && s.since(cached.timestamp) <= ttl {
-		metricSubRepoPermCacheHit.Inc()
-		return cached.rules, nil
-	}
-	metricSubRepoPermCacheMiss.Inc()
-
-	// Slow path on cache miss or expiry. Ensure that only one goroutine is doing the
-	// work
-	groupKey := strconv.FormatInt(int64(userID), 10)
-	result, err, _ := s.group.Do(groupKey, func() (any, error) {
-		repoPerms, err := s.permissionsGetter.GetByUser(ctx, userID)
-		if err != nil {
-			return nil, errors.Wrap(err, "fetching rules")
-		}
-		toCache := cachedRules{
-			rules:     make(map[api.RepoName]compiledRules, len(repoPerms)),
-			timestamp: time.Time{},
-		}
-		for repo, perms := range repoPerms {
-			includes := make([]glob.Glob, 0, len(perms.PathIncludes))
-			dirIncludes := make([]glob.Glob, 0)
-			dirSeen := make(map[string]struct{})
-			for _, rule := range perms.PathIncludes {
-				g, err := glob.Compile(rule, '/')
-				if err != nil {
-					return nil, errors.Wrap(err, "building include matcher")
-				}
-				includes = append(includes, g)
-
-				// We should include all directories above an include rule
-				dirs := expandDirs(rule)
-				for _, dir := range dirs {
-					if _, ok := dirSeen[dir]; ok {
-						continue
-					}
-					g, err := glob.Compile(dir, '/')
-					if err != nil {
-						return nil, errors.Wrap(err, "building include matcher for dir")
-					}
-					dirIncludes = append(dirIncludes, g)
-					dirSeen[dir] = struct{}{}
-				}
-			}
-
-			excludes := make([]glob.Glob, 0, len(perms.PathExcludes))
-			for _, rule := range perms.PathExcludes {
-				g, err := glob.Compile(rule, '/')
-				if err != nil {
-					return nil, errors.Wrap(err, "building exclude matcher")
-				}
-				excludes = append(excludes, g)
-			}
-			toCache.rules[repo] = compiledRules{
-				includes:    includes,
-				excludes:    excludes,
-				dirIncludes: dirIncludes,
-			}
-		}
-		toCache.timestamp = s.clock()
-		s.cache.Add(userID, toCache)
-		return toCache.rules, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	compiled := result.(map[api.RepoName]compiledRules)
-	return compiled, nil
-}
-
-func (s *SubRepoPermsClient) Enabled() bool {
-	return s.enabled.Load()
-}
-
-func (s *SubRepoPermsClient) EnabledForRepoId(ctx context.Context, id api.RepoID) (bool, error) {
-	return s.permissionsGetter.RepoIdSupported(ctx, id)
-}
-
-func (s *SubRepoPermsClient) EnabledForRepo(ctx context.Context, repo api.RepoName) (bool, error) {
-	return s.permissionsGetter.RepoSupported(ctx, repo)
-}
-
-// expandDirs will return rules that match all parent directories of the given
-// rule.
-func expandDirs(rule string) []string {
-	dirs := make([]string, 0)
-
-	// We can't support rules that start with a wildcard because we can only
-	// see one level of the tree at a time so we have no way of knowing which path leads
-	// to a file the user is allowed to see.
-	if strings.HasPrefix(rule, "*") {
-		return dirs
-	}
-
-	for {
-		lastSlash := strings.LastIndex(rule, "/")
-		if lastSlash == -1 {
-			break
-		}
-		// Drop anything after the last slash
-		rule = rule[:lastSlash]
-
-		dirs = append(dirs, rule+"/")
-	}
-
-	return dirs
-}
-
-// NewSimpleChecker is exposed for testing and allows creation of a simple
-// checker based on the rules provided. The rules are expected to be in glob
-// format.
-func NewSimpleChecker(repo api.RepoName, includes []string, excludes []string) (SubRepoPermissionChecker, error) {
-	getter := NewMockSubRepoPermissionsGetter()
-	getter.GetByUserFunc.SetDefaultHook(func(ctx context.Context, i int32) (map[api.RepoName]SubRepoPermissions, error) {
-		return map[api.RepoName]SubRepoPermissions{
-			repo: {
-				PathIncludes: includes,
-				PathExcludes: excludes,
-			},
-		}, nil
-	})
-	getter.RepoSupportedFunc.SetDefaultReturn(true, nil)
-	getter.RepoIdSupportedFunc.SetDefaultReturn(true, nil)
-	return NewSubRepoPermsClient(getter)
 }
 
 // ActorPermissions returns the level of access the given actor has for the requested
@@ -489,7 +133,7 @@ func SubRepoEnabledForRepoID(ctx context.Context, checker SubRepoPermissionCheck
 	if !SubRepoEnabled(checker) {
 		return false, nil
 	}
-	return checker.EnabledForRepoId(ctx, repoID)
+	return checker.EnabledForRepoID(ctx, repoID)
 }
 
 // SubRepoEnabledForRepo takes a SubRepoPermissionChecker and repo name and returns true if sub-repo

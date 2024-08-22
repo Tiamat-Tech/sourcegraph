@@ -1,12 +1,6 @@
-FROM golang:1.16 AS builder
-WORKDIR /build
-COPY go.sum go.mod ./
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o searchblitz ./internal/cmd/search-blitz
+FROM sourcegraph/alpine-3.14:213466_2023-04-17_5.0-bdda34a71619@sha256:6354a4ff578b685e36c8fbde81f62125ae0011b047fb2cc22d1b0de616b3c59a
 
-FROM sourcegraph/alpine-3.14:166590_2022-08-11_7ebaa5ea4d88@sha256:f6b878c33efb48a151f112a996f3f71b59e3052288cade537bc6b538f0a2450e
-
-COPY --from=builder /build/searchblitz /usr/local/bin
+COPY searchblitz /usr/local/bin
 
 ARG COMMIT_SHA="unknown"
 
